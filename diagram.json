@@ -1,0 +1,28 @@
+{
+  "version": 1,
+  "author": "Smart Parking Demo",
+  "editor": "wokwi",
+  "parts": [
+    {
+      "type": "board-st-nucleo-c031c6",
+      "id": "nucleo",
+      "top": 0,
+      "left": 0,
+      "attrs": {}
+    },
+    {
+      "type": "board-ssd1306",
+      "id": "oled1",
+      "top": -140,
+      "left": 150,
+      "attrs": { "i2c-address": "0x3C" }
+    }
+  ],
+  "connections": [
+    [ "oled1:GND", "nucleo:GND.2", "black", [ "v0" ] ],
+    [ "oled1:VCC", "nucleo:3V3", "red", [ "v0" ] ],
+    [ "oled1:SCL", "nucleo:D15", "green", [ "v0" ] ],
+    [ "oled1:SDA", "nucleo:D14", "blue", [ "v0" ] ]
+  ],
+  "dependencies": {}
+}
