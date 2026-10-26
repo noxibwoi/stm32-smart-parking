@@ -2,50 +2,124 @@
 #include <Wire.h>
 #include <Adafruit_GFX.h>
 #include <Adafruit_SSD1306.h>
+#include <Servo.h>
+
+// Serial debug output costs several KB of flash (the Nucleo-C031C6 only has
+// 32 KB). Leave at 0 for normal use, set to 1 only while tuning the sensors.
+#define DEBUG_SERIAL 0
+
+// DHT sensor type: 0 = DHT11 (your real sensor), 1 = DHT22 (Wokwi simulation)
+#define DHT_TYPE_22 0
 
 #define SCREEN_WIDTH 128
 #define SCREEN_HEIGHT 64
 
 Adafruit_SSD1306 display(SCREEN_WIDTH, SCREEN_HEIGHT, &Wire, -1);
 
+// ============================================================
+// RGB LEDs (common anode) - one per slot
+//   S1: R D2, G D3     S2: R D4, G D5
+//   S3: R D6, G D7     S4: R D8, G D9
+// ============================================================
+
+const uint8_t redPins[4]   = {D2, D4, D6, D8};
+const uint8_t greenPins[4] = {D3, D5, D7, D9};
+
+// ============================================================
+// GATE SERVO (SG90 / MG90 type)
+//   Signal: D13   (V+ 5V, GND)
+//   Opens while at least one slot is free, closes when all 4 are occupied.
+//   Adjust the two angles to match how your barrier is mounted.
+// ============================================================
+
+const uint8_t SERVO_PIN = D13;
+const uint8_t GATE_OPEN_ANGLE   = 90;
+const uint8_t GATE_CLOSED_ANGLE = 0;
+
+Servo gateServo;
+bool gateLastOpen = true;   // gate position last sent to the servo
+
+// ============================================================
+// HC-SR04 SENSORS (one per parking slot)
+//   S1: Trig A0,  Echo A1
+//   S2: Trig A2,  Echo A3
+//   S3: Trig A4,  Echo A5
+//   S4: Trig D10, Echo D11
+// ============================================================
+
+#define NUM_SLOTS 4
+
+
+const int trigPins[NUM_SLOTS] = { A0, A2, A4, D10 };
+const int echoPins[NUM_SLOTS] = { A1, A3, A5, D11 };
+
+
+// Distances are in TENTHS of a cm (150 = 15.0 cm)
+const int OCCUPIED_BELOW = 150;   // closer than 15 cm  -> car present
+const int VACANT_ABOVE   = 200;   // farther than 20 cm -> slot empty
+                                  // (gap between the two = hysteresis)
+const uint8_t CONFIRM_COUNT = 3;  // consecutive readings needed to change state
+
+int distanceTenths[NUM_SLOTS] = { -1, -1, -1, -1 };   // -1 = no echo
+uint8_t occupiedCount[NUM_SLOTS] = { 0, 0, 0, 0 };
+uint8_t vacantCount[NUM_SLOTS]   = { 0, 0, 0, 0 };
+
+uint8_t sensorIndex = 0;                   // which sensor is read next
+unsigned long sensorTimer = 0;
+const unsigned long sensorInterval = 100;  // one sensor every 100 ms
+                                           // -> each sensor every 400 ms
+                                           // (sensors never fire together,
+                                           //  so no ultrasonic crosstalk)
+
+// ============================================================
+// DHT11 TEMPERATURE / HUMIDITY SENSOR
+//   Data pin: D12   (VCC 3V3, GND)
+// Values are stored as TENTHS, integer only:
+//   280 = 28.0 C, 650 = 65.0 %
+// ============================================================
+
+const int DHT_PIN = D12;
+
+int temperature = 280;    // placeholder until the first successful read
+int humidity = 650;
+bool dhtOk = false;       // true when the last DHT read succeeded
+
+unsigned long dhtTimer = 0;
+const unsigned long dhtInterval = 2000;    // DHT11 needs >= 1 s between reads
+
 // ---------- Function prototypes (needed in PlatformIO .cpp) ----------
 void showWelcome();
 void showOverview();
 void showParkingMap();
 void showTemperatureGraph();
-void updateDemoData();
+void drawSlot(int x, int y, const char *label, bool occupied, int distTenths);
+void updateDht();
+bool readDht(int &tempTenths, int &humTenths);
 void updateGraph();
 void printTenths(int v);
-int    mapInt(long v, long inLo, long inHi, long outLo, long outHi);
+int mapInt(long v, long inLo, long inHi, long outLo, long outHi);
+void getRange(const int16_t *d, int minSpan, int &lo, int &hi);
+void updateLeds();
+void updateGate();
+void updateSensor();
+int readDistanceTenths(int slot);
 
 // ============================================================
-// DEMO PARKING DATA
+// PARKING DATA (driven live by the sensors)
 // ============================================================
 
-int availableSlots = 2;
+int availableSlots = NUM_SLOTS;
 
-bool slotStatus[4] = {
+bool slotStatus[NUM_SLOTS] = {
     false,     // S1 vacant
-    true,        // S2 occupied
+    false,     // S2 vacant
     false,     // S3 vacant
-    true         // S4 occupied
+    false      // S4 vacant
 };
 
-bool gateOpen = false;
-
-// ============================================================
-// DEMO TEMPERATURE / HUMIDITY    (stored as TENTHS, integer only)
-// 280 = 28.0 C, 650 = 65.0 %
-// ============================================================
-
-int temperature = 280;
-int humidity = 650;
-
-int tempChange = 3;
-int humidityChange = -5;
-
-unsigned long demoTimer = 0;
-const unsigned long demoInterval = 2000;
+// Gate is open while at least one slot is free,
+// closed only when all 4 slots are occupied.
+bool gateOpen = true;
 
 // ============================================================
 // SCREEN CONTROL
@@ -54,20 +128,25 @@ const unsigned long demoInterval = 2000;
 int currentScreen = 0;
 
 unsigned long screenTimer = 0;
-const unsigned long screenInterval = 4000;
+const unsigned long screenInterval = 10000;
 
 // ============================================================
-// GRAPH DATA
+// GRAPH DATA  (full-width scrolling graph, newest sample on the right)
+//   One sample per graphInterval; the whole history is drawn, so the graph
+//   shows GRAPH_POINTS * graphInterval of data (120 s at 1 s per sample).
 // ============================================================
 
-#define GRAPH_POINTS 100
-#define GRAPH_SHOWN    50
+#define GRAPH_POINTS 120          // = graph width in pixels
+
+const int GRAPH_X = 4;            // first plotted pixel column
+const int GRAPH_Y = 11;           // top plotted row
+const int GRAPH_H = 42;           // plotted height in pixels
 
 int16_t tempGraph[GRAPH_POINTS];
 int16_t humidityGraph[GRAPH_POINTS];
 
 unsigned long graphTimer = 0;
-const unsigned long graphInterval = 1000;
+const unsigned long graphInterval = 1000;   // lower = faster scrolling
 
 // ============================================================
 // HELPERS
@@ -90,11 +169,218 @@ int mapInt(long v, long inLo, long inHi, long outLo, long outHi) {
     return (int)((v - inLo) * (outHi - outLo) / (inHi - inLo) + outLo);
 }
 
+// Auto-scale: min/max of all stored samples, widened to at least minSpan
+// so a nearly flat reading doesn't look like a wild swing.
+void getRange(const int16_t *d, int minSpan, int &lo, int &hi) {
+    lo = d[0];
+    hi = d[0];
+    for (int i = 0; i < GRAPH_POINTS; i++) {
+        if (d[i] < lo) lo = d[i];
+        if (d[i] > hi) hi = d[i];
+    }
+    if (hi - lo < minSpan) {
+        int mid = (hi + lo) / 2;
+        lo = mid - minSpan / 2;
+        hi = lo + minSpan;
+    }
+}
+
+// ============================================================
+// DHT11 (no library - bit-banged to save flash)
+// ============================================================
+
+// A DHT '0' bit has a HIGH pulse of only ~27 us, so the polling loop must be
+// FAST. digitalRead() + micros() per iteration is too slow and can skip a whole
+// pulse, which shifts every following bit. Read the port input register directly
+// instead (falls back to digitalRead() if the core does not provide the macros).
+#if defined(portInputRegister) && defined(digitalPinToPort) && defined(digitalPinToBitMask)
+  #define DHT_FAST_READ 1
+#else
+  #define DHT_FAST_READ 0
+#endif
+
+#if DHT_FAST_READ
+static volatile uint32_t *dhtInReg;
+static uint32_t dhtMask;
+static inline bool dhtLevel() { return (*dhtInReg & dhtMask) != 0; }
+#else
+static inline bool dhtLevel() { return digitalRead(DHT_PIN) != LOW; }
+#endif
+
+// Max loop iterations to wait for an edge (only matters when the sensor is
+// missing or broken; a normal pulse ends after a few hundred iterations).
+#define DHT_MAX_WAIT 3000
+
+// Spin until the DHT pin reaches 'level'. Returns the number of loop iterations
+// waited (proportional to the width of the pulse that just ended), or -1 on
+// timeout. Widths are only ever compared with each other, so no absolute time
+// unit is needed.
+static int32_t waitFor(bool level, int32_t maxIter) {
+    int32_t n = 0;
+    while (dhtLevel() != level) {
+        if (++n > maxIter) return -1;
+    }
+    return n;
+}
+
+// Returns true and fills tempTenths / humTenths on a valid reading
+bool readDht(int &tempTenths, int &humTenths) {
+
+    uint8_t data[5] = { 0, 0, 0, 0, 0 };
+
+#if DHT_FAST_READ
+    dhtInReg = portInputRegister(digitalPinToPort(DHT_PIN));
+    dhtMask  = digitalPinToBitMask(DHT_PIN);
+#endif
+
+    // Start signal: pull low >= 18 ms, then release the line immediately
+    pinMode(DHT_PIN, OUTPUT);
+    digitalWrite(DHT_PIN, LOW);
+    delay(20);
+    pinMode(DHT_PIN, INPUT_PULLUP);
+
+    // Sensor response: ~80 us low, then ~80 us high.
+    // Each wait is edge-based, so it does not matter whether the line is
+    // already low when we start looking (pulseIn() skips a pulse that is
+    // already in progress, which shifts every bit and fails the checksum).
+    if (waitFor(LOW,  DHT_MAX_WAIT) < 0) return false;   // response low begins
+    if (waitFor(HIGH, DHT_MAX_WAIT) < 0) return false;   // response low ends
+    if (waitFor(LOW,  DHT_MAX_WAIT) < 0) return false;   // response high ends, bit 0 begins
+
+    // 40 data bits: each is ~50 us LOW, then a HIGH of ~27 us (0) or ~70 us (1).
+    // A bit is 1 when its HIGH is longer than its own LOW, so no absolute
+    // timing threshold is needed.
+    for (int i = 0; i < 40; i++) {
+
+        int32_t lowW = waitFor(HIGH, DHT_MAX_WAIT);
+        if (lowW < 0) return false;                          // LOW phase of bit i never ended
+
+        int32_t highW = waitFor(LOW, DHT_MAX_WAIT);
+        bool bit;
+        if (highW >= 0) {
+            bit = (highW > lowW);
+        } else if (i == 39) {
+            // After the very last bit the line may simply stay high (no further
+            // falling edge), so its HIGH width can't be measured. The checksum's
+            // lowest bit always equals the XOR of the lowest bits of the four
+            // data bytes, so derive it instead; the other 7 checksum bits are
+            // still verified below.
+            bit = ((data[0] ^ data[1] ^ data[2] ^ data[3]) & 1);
+        } else {
+            return false;                                     // HIGH phase of bit i never ended
+        }
+
+        data[i / 8] = (uint8_t)((data[i / 8] << 1) | (bit ? 1 : 0));
+    }
+
+    // Checksum
+    if ((uint8_t)(data[0] + data[1] + data[2] + data[3]) != data[4]) return false;
+
+#if DHT_TYPE_22
+    humTenths  = (data[0] << 8) | data[1];
+    tempTenths = ((data[2] & 0x7F) << 8) | data[3];
+    if (data[2] & 0x80) tempTenths = -tempTenths;
+#else
+    humTenths  = data[0] * 10 + (data[1] % 10);
+    tempTenths = data[2] * 10 + (data[3] % 10);
+#endif
+
+    return true;
+}
+
+void updateDht() {
+    int t, h;
+    dhtOk = readDht(t, h);
+    if (dhtOk) {
+        temperature = t;
+        humidity = h;
+    }
+    // on a failed read the previous values are kept
+}
+
+// ============================================================
+// HC-SR04
+// ============================================================
+
+// Returns distance in tenths of a cm, or -1 if no echo within 30 ms
+int readDistanceTenths(int slot) {
+    int trig = trigPins[slot];
+    int echo = echoPins[slot];
+
+    digitalWrite(trig, LOW);
+    delayMicroseconds(2);
+
+    digitalWrite(trig, HIGH);
+    delayMicroseconds(10);
+    digitalWrite(trig, LOW);
+
+    unsigned long duration = pulseIn(echo, HIGH, 30000UL);
+
+    if (duration == 0) return -1;
+
+    // cm = duration * 0.0343 / 2  ->  tenths = duration * 343 / 2000
+    return (int)((long)duration * 343L / 2000L);
+}
+
+// Reads ONE sensor per call (round-robin) and updates its slot
+void updateSensor() {
+
+    int s = sensorIndex;
+    sensorIndex = (sensorIndex + 1) % NUM_SLOTS;
+
+    int d = readDistanceTenths(s);
+    distanceTenths[s] = d;
+
+    bool close = (d >= 0 && d < OCCUPIED_BELOW);
+    bool far   = (d < 0  || d >= VACANT_ABOVE);
+
+    if (close) {
+        vacantCount[s] = 0;
+        if (occupiedCount[s] < CONFIRM_COUNT) occupiedCount[s]++;
+        if (occupiedCount[s] >= CONFIRM_COUNT) slotStatus[s] = true;
+    } else if (far) {
+        occupiedCount[s] = 0;
+        if (vacantCount[s] < CONFIRM_COUNT) vacantCount[s]++;
+        if (vacantCount[s] >= CONFIRM_COUNT) slotStatus[s] = false;
+    }
+    // between the two thresholds: keep the current state
+
+    // Recount vacant slots
+    int count = 0;
+    for (int i = 0; i < NUM_SLOTS; i++) {
+        if (!slotStatus[i]) count++;
+    }
+    availableSlots = count;
+
+    // Gate closes only when every slot is occupied
+    gateOpen = (availableSlots > 0);
+
+#if DEBUG_SERIAL
+    Serial.print("S");
+    Serial.print(s + 1);
+    Serial.print(": ");
+    if (d < 0) {
+        Serial.print("no echo");
+    } else {
+        Serial.print(d / 10);
+        Serial.print('.');
+        Serial.print(d % 10);
+        Serial.print(" cm");
+    }
+    Serial.print("  ");
+    Serial.println(slotStatus[s] ? "OCCUPIED" : "VACANT");
+#endif
+}
+
 // ============================================================
 // SETUP
 // ============================================================
 
 void setup() {
+
+#if DEBUG_SERIAL
+    Serial.begin(115200);
+#endif
 
     Wire.begin();
 
@@ -105,20 +391,43 @@ void setup() {
     display.clearDisplay();
     display.setTextColor(SSD1306_WHITE);
 
+    showWelcome();
+    delay(3000);                 // also gives the DHT time to power up
+
+    // First DHT reading, then start the graphs from that value
+    updateDht();
     for (int i = 0; i < GRAPH_POINTS; i++) {
         tempGraph[i] = temperature;
         humidityGraph[i] = humidity;
     }
-
-    showWelcome();
-    delay(3000);
 
     display.clearDisplay();
     display.display();
 
     screenTimer = millis();
     graphTimer = millis();
-    demoTimer = millis();
+    dhtTimer = millis();
+    sensorTimer = millis();
+
+    for (int i = 0; i < 4; i++) {
+        digitalWrite(redPins[i], HIGH);     // set OFF level first so LEDs don't flash
+        digitalWrite(greenPins[i], HIGH);
+        pinMode(redPins[i], OUTPUT);
+        pinMode(greenPins[i], OUTPUT);
+    }
+
+    for (int i = 0; i < NUM_SLOTS; i++) {
+        pinMode(trigPins[i], OUTPUT);
+        pinMode(echoPins[i], INPUT);
+        digitalWrite(trigPins[i], LOW);
+    }
+
+    updateLeds();
+
+    // Gate starts open (all slots vacant until the sensors say otherwise)
+    gateServo.attach(SERVO_PIN);
+    gateServo.write(GATE_OPEN_ANGLE);
+    gateLastOpen = true;
 }
 
 // ============================================================
@@ -129,9 +438,14 @@ void loop() {
 
     unsigned long currentMillis = millis();
 
-    if (currentMillis - demoTimer >= demoInterval) {
-        demoTimer = currentMillis;
-        updateDemoData();
+    if (currentMillis - sensorTimer >= sensorInterval) {
+        sensorTimer = currentMillis;
+        updateSensor();
+    }
+
+    if (currentMillis - dhtTimer >= dhtInterval) {
+        dhtTimer = currentMillis;
+        updateDht();
     }
 
     if (currentMillis - graphTimer >= graphInterval) {
@@ -156,6 +470,8 @@ void loop() {
     }
 
     display.display();
+    updateLeds();
+    updateGate();
 }
 
 // ============================================================
@@ -215,18 +531,35 @@ void showOverview() {
     display.print("H:");
     display.print((humidity + 5) / 10);
     display.print("%");
+
+    if (!dhtOk) {                 // '!' = last DHT read failed
+        display.setCursor(120, 53);
+        display.print('!');
+    }
 }
 
 // ============================================================
 // PARKING MAP
 // ============================================================
 
-void drawSlot(int x, int y, const char *label, bool occupied) {
+// Slot box (58 x 13):  [label][distance in cm][occupied block]
+void drawSlot(int x, int y, const char *label, bool occupied, int distTenths) {
     display.drawRect(x, y, 58, 13, SSD1306_WHITE);
+
     display.setCursor(x + 4, y + 3);
     display.print(label);
+
+    display.setCursor(x + 18, y + 3);
+    if (distTenths < 0) {
+        display.print("--");
+    } else {
+        int cm = (distTenths + 5) / 10;
+        if (cm > 999) cm = 999;
+        display.print(cm);
+    }
+
     if (occupied) {
-        display.fillRect(x + 31, y + 2, 23, 9, SSD1306_WHITE);
+        display.fillRect(x + 40, y + 2, 14, 9, SSD1306_WHITE);
     }
 }
 
@@ -238,10 +571,10 @@ void showParkingMap() {
     display.setCursor(40, 2);
     display.println("PARKING MAP");
 
-    drawSlot(3, 18, "S1", slotStatus[0]);
-    drawSlot(67, 18, "S2", slotStatus[1]);
-    drawSlot(3, 34, "S3", slotStatus[2]);
-    drawSlot(67, 34, "S4", slotStatus[3]);
+    drawSlot(3, 18, "S1", slotStatus[0], distanceTenths[0]);
+    drawSlot(67, 18, "S2", slotStatus[1], distanceTenths[1]);
+    drawSlot(3, 34, "S3", slotStatus[2], distanceTenths[2]);
+    drawSlot(67, 34, "S4", slotStatus[3], distanceTenths[3]);
 
     display.setCursor(2, 53);
     display.print("V:");
@@ -260,7 +593,10 @@ void showParkingMap() {
 }
 
 // ============================================================
-// TEMPERATURE + HUMIDITY GRAPH
+// TEMPERATURE + HUMIDITY SCROLLING GRAPH (live DHT data, auto-scaled)
+//   Solid line  = temperature
+//   Dotted line = humidity
+//   Newest sample is on the right; older samples scroll off the left.
 // ============================================================
 
 void showTemperatureGraph() {
@@ -268,89 +604,59 @@ void showTemperatureGraph() {
     display.setTextColor(SSD1306_WHITE);
     display.setTextSize(1);
 
-    display.setCursor(22, 2);
-    display.println("TEMP / HUMIDITY");
-
-    display.setCursor(5, 17);
-    display.print("TEMP:");
-    display.setCursor(38, 17);
+    // Header: live values
+    display.setCursor(0, 0);
+    display.print("TEMP ");
     printTenths(temperature);
     display.print("C");
 
-    display.setCursor(69, 17);
-    display.print("HUM:");
-    display.setCursor(98, 17);
+    display.setCursor(72, 0);
+    display.print("HUM ");
     display.print((humidity + 5) / 10);
     display.print("%");
 
-    display.drawRect(3, 27, 58, 23, SSD1306_WHITE);
-    display.drawRect(67, 27, 58, 23, SSD1306_WHITE);
-
-    const int base = GRAPH_POINTS - GRAPH_SHOWN;     // show the newest samples
-
-    // Temperature graph (25.0 - 32.0 C)
-    for (int x = 1; x < GRAPH_SHOWN; x++) {
-        int x1 = 7 + x;
-        int x2 = 8 + x;
-        if (x2 >= 59) break;
-
-        int y1 = 48 - mapInt(tempGraph[base + x - 1], 250, 320, 0, 18);
-        int y2 = 48 - mapInt(tempGraph[base + x], 250, 320, 0, 18);
-
-        display.drawLine(x1, y1, x2, y2, SSD1306_WHITE);
+    if (!dhtOk) {                 // '!' = last DHT read failed
+        display.setCursor(120, 0);
+        display.print('!');
     }
 
-    // Humidity graph (55 - 75 %), dotted
-    for (int x = 1; x < GRAPH_SHOWN; x++) {
-        int x1 = 71 + x;
-        int x2 = 72 + x;
-        if (x2 >= 123) break;
+    // Graph frame (plot area sits inside it)
+    display.drawRect(GRAPH_X - 1, GRAPH_Y - 1, GRAPH_POINTS + 2, GRAPH_H + 2, SSD1306_WHITE);
 
-        int y1 = 48 - mapInt(humidityGraph[base + x - 1], 550, 750, 0, 18);
-        int y2 = 48 - mapInt(humidityGraph[base + x], 550, 750, 0, 18);
+    int tLo, tHi, hLo, hHi;
+    getRange(tempGraph, 20, tLo, tHi);          // at least a 2.0 C window
+    getRange(humidityGraph, 100, hLo, hHi);     // at least a 10 % window
 
-        if (x % 2 == 0) {
-            display.drawLine(x1, y1, x2, y2, SSD1306_WHITE);
-        }
+    const int bottom = GRAPH_Y + GRAPH_H - 1;
+
+    // Temperature: solid line
+    for (int x = 1; x < GRAPH_POINTS; x++) {
+        int y1 = bottom - mapInt(tempGraph[x - 1], tLo, tHi, 0, GRAPH_H - 1);
+        int y2 = bottom - mapInt(tempGraph[x],     tLo, tHi, 0, GRAPH_H - 1);
+        display.drawLine(GRAPH_X + x - 1, y1, GRAPH_X + x, y2, SSD1306_WHITE);
     }
 
-    display.setCursor(37, 54);
-    display.print("VACANT:");
+    // Humidity: dotted line (every other segment)
+    for (int x = 1; x < GRAPH_POINTS; x++) {
+        if (x % 2) continue;
+        int y1 = bottom - mapInt(humidityGraph[x - 1], hLo, hHi, 0, GRAPH_H - 1);
+        int y2 = bottom - mapInt(humidityGraph[x],     hLo, hHi, 0, GRAPH_H - 1);
+        display.drawLine(GRAPH_X + x - 1, y1, GRAPH_X + x, y2, SSD1306_WHITE);
+    }
+
+    // Footer: legend + vacant count
+    display.setCursor(3, 56);
+    display.print("- TEMP");
+    display.setCursor(45, 56);
+    display.print(". HUM");
+    display.setCursor(92, 56);
+    display.print("V:");
     display.print(availableSlots);
     display.print("/4");
 }
 
 // ============================================================
-// UPDATE DEMO DATA
-// ============================================================
-
-void updateDemoData() {
-
-    temperature += tempChange;
-
-    if (temperature >= 320) {
-        temperature = 320;
-        tempChange = -3;
-    }
-    if (temperature <= 250) {
-        temperature = 250;
-        tempChange = 3;
-    }
-
-    humidity += humidityChange;
-
-    if (humidity >= 750) {
-        humidity = 750;
-        humidityChange = -5;
-    }
-    if (humidity <= 550) {
-        humidity = 550;
-        humidityChange = 5;
-    }
-}
-
-// ============================================================
-// UPDATE GRAPH DATA
+// UPDATE GRAPH DATA  (shift left, append newest reading on the right)
 // ============================================================
 
 void updateGraph() {
@@ -362,4 +668,20 @@ void updateGraph() {
 
     tempGraph[GRAPH_POINTS - 1] = temperature;
     humidityGraph[GRAPH_POINTS - 1] = humidity;
+}
+
+// Common anode: LOW = ON, HIGH = OFF
+void updateLeds() {
+    for (int i = 0; i < 4; i++) {
+        digitalWrite(redPins[i],   slotStatus[i] ? LOW  : HIGH);  // occupied -> red
+        digitalWrite(greenPins[i], slotStatus[i] ? HIGH : LOW);   // vacant   -> green
+    }
+}
+
+// Move the gate servo only when the open/closed state actually changes
+// (the same state that the display shows as OPEN / CLOSED).
+void updateGate() {
+    if (gateOpen == gateLastOpen) return;
+    gateLastOpen = gateOpen;
+    gateServo.write(gateOpen ? GATE_OPEN_ANGLE : GATE_CLOSED_ANGLE);
 }
