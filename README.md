@@ -141,7 +141,7 @@ The servo implementation depends on the library or timer-based PWM method used i
 Open a terminal and run:
 
 ```bash
-git clone <[YOUR_REPOSITORY_URL](https://github.com/noxibwoi/stm32-smart-parking)>
+git clone https://github.com/noxibwoi/stm32-smart-parking
 ```
 
 
