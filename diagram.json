@@ -1,28 +1,259 @@
 {
-  "version": 1,
-  "author": "Smart Parking Demo",
-  "editor": "wokwi",
-  "parts": [
-    {
-      "type": "board-st-nucleo-c031c6",
-      "id": "nucleo",
-      "top": 0,
-      "left": 0,
-      "attrs": {}
-    },
-    {
-      "type": "board-ssd1306",
-      "id": "oled1",
-      "top": -140,
-      "left": 150,
-      "attrs": { "i2c-address": "0x3C" }
-    }
-  ],
-  "connections": [
-    [ "oled1:GND", "nucleo:GND.2", "black", [ "v0" ] ],
-    [ "oled1:VCC", "nucleo:3V3", "red", [ "v0" ] ],
-    [ "oled1:SCL", "nucleo:D15", "green", [ "v0" ] ],
-    [ "oled1:SDA", "nucleo:D14", "blue", [ "v0" ] ]
-  ],
-  "dependencies": {}
+ "version": 1,
+ "author": "Smart Parking",
+ "editor": "wokwi",
+ "parts": [
+  {
+   "type": "board-st-nucleo-c031c6",
+   "id": "nucleo",
+   "top": 0,
+   "left": 0,
+   "attrs": {}
+  },
+  {
+   "type": "board-ssd1306",
+   "id": "oled",
+   "top": -150,
+   "left": 340,
+   "attrs": {
+    "i2cAddress": "0x3c"
+   }
+  },
+  {
+   "type": "wokwi-dht22",
+   "id": "dht",
+   "top": -170,
+   "left": 160,
+   "attrs": {
+    "temperature": "26",
+    "humidity": "60"
+   }
+  },
+  {
+   "type": "wokwi-hc-sr04",
+   "id": "us1",
+   "top": -300,
+   "left": -330,
+   "attrs": {
+    "distance": "100"
+   }
+  },
+  {
+   "type": "wokwi-rgb-led",
+   "id": "led1",
+   "top": 330,
+   "left": -60,
+   "attrs": {
+    "common": "anode"
+   }
+  },
+  {
+   "type": "wokwi-resistor",
+   "id": "rr1",
+   "top": 265,
+   "left": -78,
+   "rotate": 90,
+   "attrs": {
+    "value": "220"
+   }
+  },
+  {
+   "type": "wokwi-resistor",
+   "id": "rg1",
+   "top": 265,
+   "left": -48,
+   "rotate": 90,
+   "attrs": {
+    "value": "220"
+   }
+  },
+  {
+   "type": "wokwi-hc-sr04",
+   "id": "us2",
+   "top": -300,
+   "left": -190,
+   "attrs": {
+    "distance": "100"
+   }
+  },
+  {
+   "type": "wokwi-rgb-led",
+   "id": "led2",
+   "top": 330,
+   "left": 20,
+   "attrs": {
+    "common": "anode"
+   }
+  },
+  {
+   "type": "wokwi-resistor",
+   "id": "rr2",
+   "top": 265,
+   "left": 2,
+   "rotate": 90,
+   "attrs": {
+    "value": "220"
+   }
+  },
+  {
+   "type": "wokwi-resistor",
+   "id": "rg2",
+   "top": 265,
+   "left": 32,
+   "rotate": 90,
+   "attrs": {
+    "value": "220"
+   }
+  },
+  {
+   "type": "wokwi-hc-sr04",
+   "id": "us3",
+   "top": -300,
+   "left": -50,
+   "attrs": {
+    "distance": "100"
+   }
+  },
+  {
+   "type": "wokwi-rgb-led",
+   "id": "led3",
+   "top": 330,
+   "left": 100,
+   "attrs": {
+    "common": "anode"
+   }
+  },
+  {
+   "type": "wokwi-resistor",
+   "id": "rr3",
+   "top": 265,
+   "left": 82,
+   "rotate": 90,
+   "attrs": {
+    "value": "220"
+   }
+  },
+  {
+   "type": "wokwi-resistor",
+   "id": "rg3",
+   "top": 265,
+   "left": 112,
+   "rotate": 90,
+   "attrs": {
+    "value": "220"
+   }
+  },
+  {
+   "type": "wokwi-hc-sr04",
+   "id": "us4",
+   "top": -300,
+   "left": 90,
+   "attrs": {
+    "distance": "100"
+   }
+  },
+  {
+   "type": "wokwi-rgb-led",
+   "id": "led4",
+   "top": 330,
+   "left": 180,
+   "attrs": {
+    "common": "anode"
+   }
+  },
+  {
+   "type": "wokwi-resistor",
+   "id": "rr4",
+   "top": 265,
+   "left": 162,
+   "rotate": 90,
+   "attrs": {
+    "value": "220"
+   }
+  },
+  {
+   "type": "wokwi-resistor",
+   "id": "rg4",
+   "top": 265,
+   "left": 192,
+   "rotate": 90,
+   "attrs": {
+    "value": "220"
+   }
+  },
+  {
+   "type": "wokwi-servo",
+   "id": "gateServo",
+   "top": 160,
+   "left": 340,
+   "attrs": {
+    "horn": "single"
+   }
+  }
+ ],
+ "connections": [
+  ["oled:GND", "nucleo:GND.9", "black", ["v0"]],
+  ["oled:VCC", "nucleo:3V3.2", "red", ["v0"]],
+  ["oled:SCL", "nucleo:D15", "green", ["v0"]],
+  ["oled:SDA", "nucleo:D14", "blue", ["v0"]],
+  
+  ["dht:VCC", "nucleo:3V3.2", "red", ["v0"]],
+  ["dht:GND", "nucleo:GND.9", "black", ["v0"]],
+  ["dht:SDA", "nucleo:D12", "orange", ["v0"]],
+
+  
+  ["us1:VCC", "nucleo:3V3.2", "red", ["v0"]],
+  ["us1:GND", "nucleo:GND.9", "black", ["v0"]],
+  ["us1:TRIG", "nucleo:A0", "green", ["v0"]],
+  ["us1:ECHO", "nucleo:A1", "blue", ["v0"]],
+
+  ["led1:COM","nucleo:3V3.2","red",[ "v0"]],
+  ["nucleo:D2","rr1:1","red",["v0"]],
+  ["rr1:2", "led1:R", "red", ["v0"]],
+  ["nucleo:D3", "rg1:1", "green", ["v0"]],
+  ["rg1:2", "led1:G", "green", ["v0"]],
+
+
+  ["us2:VCC", "nucleo:3V3.2", "red", ["v0"]],
+  ["us2:GND", "nucleo:GND.9", "black", ["v0"]],
+  ["us2:TRIG", "nucleo:A2", "green", ["v0"]],
+  ["us2:ECHO", "nucleo:A3", "blue", ["v0"]],
+
+  ["led2:COM", "nucleo:3V3.2", "red", ["v0"]],
+  ["nucleo:D4", "rr2:1", "red", ["v0"]],
+  ["rr2:2", "led2:R", "red", ["v0"]],
+  ["nucleo:D5", "rg2:1", "green", ["v0"]],
+  ["rg2:2", "led2:G", "green", ["v0"]],
+
+
+  ["us3:VCC", "nucleo:3V3.2", "red", ["v0"]],
+  ["us3:GND", "nucleo:GND.9", "black", ["v0"]],
+  ["us3:TRIG", "nucleo:D0", "green", ["v0"]],
+  ["us3:ECHO", "nucleo:D1", "blue", ["v0"]],
+
+  ["led3:COM", "nucleo:3V3.2", "red", ["v0"]],
+  ["nucleo:D6", "rr3:1", "red", ["v0"]],
+  ["rr3:2", "led3:R", "red", ["v0"]],
+  ["nucleo:D7", "rg3:1", "green", ["v0"]],
+  ["rg3:2", "led3:G", "green", ["v0"]],
+
+
+  ["us4:VCC", "nucleo:3V3.2", "red", ["v0"]],
+  ["us4:GND", "nucleo:GND.9", "black", ["v0"]],
+  ["us4:TRIG", "nucleo:D10", "green", ["v0"]],
+  ["us4:ECHO", "nucleo:D11", "blue", ["v0"]],
+
+  ["led4:COM", "nucleo:3V3.2", "red", ["v0"]],
+  ["nucleo:D8", "rr4:1", "red", ["v0"]],
+  ["rr4:2", "led4:R", "red", ["v0"]],
+  ["nucleo:D9", "rg4:1", "green", ["v0"]],
+  ["rg4:2", "led4:G", "green", ["v0"]],
+
+
+  ["gateServo:PWM", "nucleo:D13", "green", ["v0"]],
+  ["gateServo:V+", "nucleo:3V3.2", "red", ["v0"]],
+  ["gateServo:GND", "nucleo:GND.9", "black", ["v0"]]
+
+ ],
+ "dependencies": {}
 }
